@@ -415,9 +415,9 @@ let
     let
       modulesStruct = if modules == null then { } else fromTOML (readFile modules);
 
-      goModPath = "${toString pwd}/go.mod";
+      goModPath = if pwd != null then "${toString pwd}/go.mod" else null;
 
-      goMod = if pwd != null && pathExists goModPath then parseGoMod (readFile goModPath) else null;
+      goMod = if goModPath != null && pathExists goModPath then parseGoMod (readFile goModPath) else null;
 
       go = selectGo attrs goMod;
 
@@ -448,18 +448,18 @@ let
         else
           src;
 
+      # `lib.cleanSourceWith`/`builtins.path` would read `depFilesSrc`'s
+      # listing at eval time, forcing IFD. Copy in a build phase instead.
       depFilesPath =
         if (!disableGoCache && modulesStruct != { } && depFilesSrc != null) then
-          lib.cleanSourceWith {
-            src = depFilesSrc;
-            filter =
-              path: type:
-              let
-                baseName = baseNameOf path;
-              in
-              baseName == "go.mod" || baseName == "go.sum" || baseName == "gomod2nix.toml";
-            name = "go-dep-files";
-          }
+          runCommand "go-dep-files" { } ''
+            mkdir -p "$out"
+            for f in go.mod go.sum gomod2nix.toml; do
+              if [ -e "${depFilesSrc}/$f" ]; then
+                cp "${depFilesSrc}/$f" "$out/$f"
+              fi
+            done
+          ''
         else
           null;
 
