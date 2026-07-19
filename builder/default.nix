@@ -402,6 +402,7 @@ let
       modules ? pwd + "/gomod2nix.toml",
       src ? pwd,
       pwd ? null,
+      goMod ? null,
       nativeBuildInputs ? [ ],
       allowGoReference ? false,
       meta ? { },
@@ -417,9 +418,15 @@ let
 
       goModPath = if pwd != null then "${toString pwd}/go.mod" else null;
 
-      goMod = if goModPath != null && pathExists goModPath then parseGoMod (readFile goModPath) else null;
+      resolvedGoMod =
+        if goMod != null then
+          goMod
+        else if goModPath != null && pathExists goModPath then
+          parseGoMod (readFile goModPath)
+        else
+          null;
 
-      go = selectGo attrs goMod;
+      go = selectGo attrs resolvedGoMod;
 
       defaultPackage = modulesStruct.goPackagePath or "";
 
@@ -429,21 +436,20 @@ let
             inherit
               defaultPackage
               go
-              goMod
               modulesStruct
               pwd
               ;
+            goMod = resolvedGoMod;
           }
         else
           null;
 
       # Filter source to only dependency files for cache derivation
       # Use fetched source when building from goPackagePath
-      # When pwd is set but doesn't contain go.mod (goMod == null), use src instead
       depFilesSrc =
         if defaultPackage != "" then
           vendorEnv.passthru.sources.${defaultPackage}
-        else if goMod != null then
+        else if pwd != null then
           pwd
         else
           src;
@@ -476,7 +482,7 @@ let
               allowGoReference
               ;
             CGO_ENABLED = attrs.CGO_ENABLED or go.CGO_ENABLED;
-            goMod = if goMod != null then goMod else { replace = { }; };
+            goMod = if resolvedGoMod != null then resolvedGoMod else { replace = { }; };
           }
         else
           null;
@@ -493,7 +499,7 @@ let
       // optionalAttrs (hasAttr "subPackages" modulesStruct) {
         subPackages = modulesStruct.subPackages;
       }
-      // attrs
+      // removeAttrs attrs [ "goMod" ]
       // {
         nativeBuildInputs = [
           go
