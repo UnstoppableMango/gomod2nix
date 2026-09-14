@@ -402,7 +402,6 @@ let
       modules ? pwd + "/gomod2nix.toml",
       src ? pwd,
       pwd ? null,
-      goMod ? null,
       nativeBuildInputs ? [ ],
       allowGoReference ? false,
       meta ? { },
@@ -416,17 +415,11 @@ let
     let
       modulesStruct = if modules == null then { } else fromTOML (readFile modules);
 
-      goModPath = if pwd != null then "${toString pwd}/go.mod" else null;
+      goModPath = "${toString pwd}/go.mod";
 
-      resolvedGoMod =
-        if goMod != null then
-          goMod
-        else if goModPath != null && pathExists goModPath then
-          parseGoMod (readFile goModPath)
-        else
-          null;
+      goMod = if pwd != null && pathExists goModPath then parseGoMod (readFile goModPath) else null;
 
-      go = selectGo attrs resolvedGoMod;
+      go = selectGo attrs goMod;
 
       defaultPackage = modulesStruct.goPackagePath or "";
 
@@ -436,38 +429,53 @@ let
             inherit
               defaultPackage
               go
+              goMod
               modulesStruct
               pwd
               ;
-            goMod = resolvedGoMod;
           }
         else
           null;
 
       # Filter source to only dependency files for cache derivation
       # Use fetched source when building from goPackagePath
+      # When pwd is set but doesn't contain go.mod (goMod == null), use src instead
       depFilesSrc =
         if defaultPackage != "" then
           vendorEnv.passthru.sources.${defaultPackage}
-        else if pwd != null then
+        else if goMod != null then
           pwd
         else
           src;
 
-      # `lib.cleanSourceWith`/`builtins.path` would read `depFilesSrc`'s
-      # listing at eval time, forcing IFD. Copy in a build phase instead.
+      depFiles = [
+        "go.mod"
+        "go.sum"
+        "gomod2nix.toml"
+      ];
+
+      # Filtering a derivation with `lib.cleanSourceWith` reads its listing at
+      # eval time, which is import-from-derivation, so a fetched source is copied
+      # from in a build step instead. Other sources keep the filter, so only these
+      # files reach the cache derivation.
       depFilesPath =
-        if (!disableGoCache && modulesStruct != { } && depFilesSrc != null) then
+        if (disableGoCache || modulesStruct == { } || depFilesSrc == null) then
+          null
+        else if lib.isDerivation depFilesSrc then
           runCommand "go-dep-files" { } ''
             mkdir -p "$out"
-            for f in go.mod go.sum gomod2nix.toml; do
+            for f in ${concatStringsSep " " depFiles}; do
               if [ -e "${depFilesSrc}/$f" ]; then
                 cp "${depFilesSrc}/$f" "$out/$f"
               fi
             done
           ''
         else
-          null;
+          lib.cleanSourceWith {
+            src = depFilesSrc;
+            filter = path: type: builtins.elem (baseNameOf path) depFiles;
+            name = "go-dep-files";
+          };
 
       cacheEnv =
         if (!disableGoCache && modulesStruct != { } && depFilesPath != null) then
@@ -482,7 +490,7 @@ let
               allowGoReference
               ;
             CGO_ENABLED = attrs.CGO_ENABLED or go.CGO_ENABLED;
-            goMod = if resolvedGoMod != null then resolvedGoMod else { replace = { }; };
+            goMod = if goMod != null then goMod else { replace = { }; };
           }
         else
           null;
@@ -499,7 +507,7 @@ let
       // optionalAttrs (hasAttr "subPackages" modulesStruct) {
         subPackages = modulesStruct.subPackages;
       }
-      // removeAttrs attrs [ "goMod" ]
+      // attrs
       // {
         nativeBuildInputs = [
           go
